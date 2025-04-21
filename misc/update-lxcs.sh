@@ -64,11 +64,11 @@ function update_container() {
     echo -e "${BL}[Info]${GN} Updating ${BL}$container${CL} : ${GN}$name${CL} - ${YW}[No disk info for ${os}]${CL}\n"
   fi
   case "$os" in
-  alpine) pct exec "$container" -- ash -c "apk update && apk upgrade" ;;
-  archlinux) pct exec "$container" -- bash -c "pacman -Syyu --noconfirm" ;;
-  fedora | rocky | centos | alma) pct exec "$container" -- bash -c "dnf -y update && dnf -y upgrade" ;;
-  ubuntu | debian | devuan) pct exec "$container" -- bash -c "apt-get update 2>/dev/null | grep 'packages.*upgraded'; apt list --upgradable && apt-get -yq dist-upgrade 2>&1; rm -rf /usr/lib/python3.*/EXTERNALLY-MANAGED" ;;
-  opensuse) pct exec "$container" -- bash -c "zypper ref && zypper --non-interactive dup" ;;
+  alpine) pct exec "$container" -- ash -c "apk update && apk upgrade && apk cache clean" ;;
+  archlinux) pct exec "$container" -- bash -c "pacman -Syyu --noconfirm && pacman -Sc --noconfirm" ;;
+  fedora | rocky | centos | alma) pct exec "$container" -- bash -c "dnf -y update && dnf -y upgrade && dnf -y autoremove && dnf clean all" ;;
+  ubuntu | debian | devuan) pct exec "$container" -- bash -c "apt-get update 2>/dev/null | grep 'packages.*upgraded'; apt list --upgradable && apt-get -yq dist-upgrade 2>&1; rm -rf /usr/lib/python3.*/EXTERNALLY-MANAGED; apt-get autoremove -y; apt-get autoclean -y" ;;
+  opensuse) pct exec "$container" -- bash -c "zypper ref && zypper --non-interactive dup && zypper clean --all" ;;
   esac
 }
 

@@ -688,15 +688,44 @@ msg_ok "${CL}${BL}${DOWNLOAD_URL}${CL}"
 extract_xz_with_pv "$CACHE_FILE" "$FILE_IMG"
 
 STORAGE_TYPE=$(pvesm status -storage "$STORAGE" | awk 'NR>1 {print $2}')
-DISK_EXT=".raw"
-DISK_REF="$VMID/"
-DISK_IMPORT="-format raw"
+
+# Disk naming and reference format depends on storage type
 case "$STORAGE_TYPE" in
   nfs | dir)
+    # Directory-based: use subdir + .raw extension
+    DISK_EXT=".raw"
+    DISK_REF="$VMID/"
+    DISK_IMPORT="-format raw"
     THIN=""
     ;;
-  btrfs | local-zfs)
+  btrfs)
+    # Btrfs: no subdir, no extension
+    DISK_EXT=""
+    DISK_REF=""
+    DISK_IMPORT="-format raw"
     FORMAT=",efitype=4m"
+    THIN=""
+    ;;
+  zfspool)
+    # ZFS: no subdir, no extension, enable thin provisioning
+    DISK_EXT=""
+    DISK_REF=""
+    DISK_IMPORT="-format raw"
+    FORMAT=",efitype=4m"
+    THIN="discard=on,ssd=1,"
+    ;;
+  lvmthin)
+    # LVM-thin: no subdir, no extension, enable thin provisioning
+    DISK_EXT=""
+    DISK_REF=""
+    DISK_IMPORT="-format raw"
+    THIN="discard=on,ssd=1,"
+    ;;
+  *)
+    # Fallback for other types (treat as block-based)
+    DISK_EXT=""
+    DISK_REF=""
+    DISK_IMPORT="-format raw"
     THIN=""
     ;;
 esac

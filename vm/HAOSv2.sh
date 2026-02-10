@@ -207,26 +207,55 @@ function get_valid_nextid() {
 }
 
 # ---------- HAOS version handling (no eval) ----------
-HA_STABLE_URL_JSON="https://raw.githubusercontent.com/home-assistant/version/master/stable.json"
-HA_BETA_URL_JSON="https://raw.githubusercontent.com/home-assistant/version/master/beta.json"
-HA_DEV_URL_JSON="https://raw.githubusercontent.com/home-assistant/version/master/dev.json"
+# Primary metadata source (official version service), with GitHub fallback.
+HA_STABLE_JSON_PRIMARY="https://version.home-assistant.io/stable.json"
+HA_STABLE_JSON_FALLBACK="https://raw.githubusercontent.com/home-assistant/version/master/stable.json"
+HA_BETA_JSON_PRIMARY="https://version.home-assistant.io/beta.json"
+HA_BETA_JSON_FALLBACK="https://raw.githubusercontent.com/home-assistant/version/master/beta.json"
+HA_DEV_JSON_PRIMARY="https://version.home-assistant.io/dev.json"
+HA_DEV_JSON_FALLBACK="https://raw.githubusercontent.com/home-assistant/version/master/dev.json"
 
-function get_ha_url_from_json() {
-  local json_url="$1"
-  curl -fsSL "$json_url" | grep '"ova"' | cut -d '"' -f 4
+function get_ha_ova_url() {
+  local primary="$1"
+  local fallback="$2"
+  local json
+  local url
+
+  # Try primary
+  json="$(curl -fsSL "$primary" 2>/dev/null || true)"
+  if [[ -z "$json" ]]; then
+    # Fallback to GitHub mirror
+    json="$(curl -fsSL "$fallback" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$json" ]]; then
+    return 1
+  fi
+
+  url="$(printf '%s\n' "$json" | grep '"ova"' | head -n1 | cut -d '"' -f 4)"
+
+  # Basic sanity check: must be a GitHub HAOS OVA URL
+  case "$url" in
+    https://github.com/home-assistant/operating-system/releases/download/*/haos_ova-*.qcow2.xz)
+      printf '%s\n' "$url"
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 msg_info "Retrieving Home Assistant version metadata"
-STABLE_URL="$(get_ha_url_from_json "$HA_STABLE_URL_JSON" || true)"
-BETA_URL="$(get_ha_url_from_json "$HA_BETA_URL_JSON" || true)"
-DEV_URL="$(get_ha_url_from_json "$HA_DEV_URL_JSON" || true)"
-msg_ok "Retrieved HAOS metadata"
-
-if [[ -z "$STABLE_URL" ]]; then
+STABLE_URL="$(get_ha_ova_url "$HA_STABLE_JSON_PRIMARY" "$HA_STABLE_JSON_FALLBACK")" || {
   msg_error "Unable to retrieve stable HAOS URL from metadata."
-  echo "Check network / GitHub connectivity or hard-code a known stable release URL."
+  echo "Check network connectivity or manually set STABLE_URL in the script."
   exit 1
-fi
+}
+BETA_URL="$(get_ha_ova_url "$HA_BETA_JSON_PRIMARY" "$HA_BETA_JSON_FALLBACK" || true)"
+DEV_URL="$(get_ha_ova_url "$HA_DEV_JSON_PRIMARY" "$HA_DEV_JSON_FALLBACK" || true)"
+msg_ok "Retrieved HAOS metadata (Stable: $STABLE_URL)"
+
 
 # ---------- Image download helpers ----------
 function ensure_pv() {
@@ -256,11 +285,18 @@ function download_and_validate_xz() {
   fi
 
   msg_info "Downloading image: $(basename "$file")"
-  if ! curl -fSL -o "$file" "$url"; then
+  # Stop spinner before curl so progress shows
+  if [ -n "${SPINNER_PID:-}" ] && ps -p "$SPINNER_PID" > /dev/null 2>&1; then
+    kill "$SPINNER_PID" > /dev/null 2>&1 || true
+  fi
+  printf "\e[?25h"
+  
+  if ! curl -fSL --progress-bar -o "$file" "$url"; then
     msg_error "Download failed: $url"
     rm -f "$file"
     exit 1
   fi
+  echo ""
 
   if ! xz -t "$file" &>/dev/null; then
     msg_error "Downloaded file $(basename "$file") is corrupted."

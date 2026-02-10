@@ -215,46 +215,33 @@ HA_BETA_JSON_FALLBACK="https://raw.githubusercontent.com/home-assistant/version/
 HA_DEV_JSON_PRIMARY="https://version.home-assistant.io/dev.json"
 HA_DEV_JSON_FALLBACK="https://raw.githubusercontent.com/home-assistant/version/master/dev.json"
 
-function get_ha_ova_url() {
+# Returns a version string like "17.0" from the JSON "ova" field.
+function get_haos_ova_version() {
   local primary="$1"
   local fallback="$2"
   local json
-  local url
+  local ver
 
-  # Try primary
   json="$(curl -fsSL "$primary" 2>/dev/null || true)"
-  if [[ -z "$json" ]]; then
-    # Fallback to GitHub mirror
-    json="$(curl -fsSL "$fallback" 2>/dev/null || true)"
-  fi
+  [[ -z "$json" ]] && json="$(curl -fsSL "$fallback" 2>/dev/null || true)"
+  [[ -z "$json" ]] && return 1
 
-  if [[ -z "$json" ]]; then
-    return 1
-  fi
+  ver="$(printf '%s\n' "$json" | grep '"ova"' | head -n1 | cut -d '"' -f 4)"
+  # Sanity: version-ish (e.g. 17.0, 17.0.rc1, 17.0b1)
+  [[ "$ver" =~ ^[0-9]+(\.[0-9]+)+([a-z0-9.\-]+)?$ ]] || return 1
 
-  url="$(printf '%s\n' "$json" | grep '"ova"' | head -n1 | cut -d '"' -f 4)"
-
-  # Basic sanity check: must be a GitHub HAOS OVA URL
-  case "$url" in
-    https://github.com/home-assistant/operating-system/releases/download/*/haos_ova-*.qcow2.xz)
-      printf '%s\n' "$url"
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+  printf '%s\n' "$ver"
 }
 
-msg_info "Retrieving Home Assistant version metadata"
-STABLE_URL="$(get_ha_ova_url "$HA_STABLE_JSON_PRIMARY" "$HA_STABLE_JSON_FALLBACK")" || {
-  msg_error "Unable to retrieve stable HAOS URL from metadata."
-  echo "Check network connectivity or manually set STABLE_URL in the script."
+msg_info "Retrieving Home Assistant OS version metadata"
+STABLE_VER="$(get_haos_ova_version "$HA_STABLE_JSON_PRIMARY" "$HA_STABLE_JSON_FALLBACK")" || {
+  msg_error "Unable to retrieve stable HAOS OVA version from metadata."
+  echo "You can hard-code STABLE_VER (e.g., STABLE_VER=\"17.0\") if needed."
   exit 1
 }
-BETA_URL="$(get_ha_ova_url "$HA_BETA_JSON_PRIMARY" "$HA_BETA_JSON_FALLBACK" || true)"
-DEV_URL="$(get_ha_ova_url "$HA_DEV_JSON_PRIMARY" "$HA_DEV_JSON_FALLBACK" || true)"
-msg_ok "Retrieved HAOS metadata (Stable: $STABLE_URL)"
+BETA_VER="$(get_haos_ova_version "$HA_BETA_JSON_PRIMARY" "$HA_BETA_JSON_FALLBACK" || true)"
+DEV_VER="$(get_haos_ova_version "$HA_DEV_JSON_PRIMARY" "$HA_DEV_JSON_FALLBACK" || true)"
+msg_ok "Retrieved HAOS versions (Stable: $STABLE_VER)"
 
 
 # ---------- Image download helpers ----------
@@ -267,6 +254,17 @@ function ensure_pv() {
       exit 1
     fi
     msg_ok "Installed pv"
+  fi
+}
+function ensure_xz() {
+  if ! command -v xz &>/dev/null; then
+    msg_info "Installing required package: xz-utils"
+    if ! apt-get update -qq &>/dev/null || ! apt-get install -y xz-utils &>/dev/null; then
+      msg_error "Failed to install xz-utils automatically."
+      echo -e "\nPlease run manually on the Proxmox host:\n  apt install xz-utils\n"
+      exit 1
+    fi
+    msg_ok "Installed xz-utils"
   fi
 }
 
@@ -291,7 +289,10 @@ function download_and_validate_xz() {
   fi
   printf "\e[?25h"
   
-  if ! curl -fSL --progress-bar -o "$file" "$url"; then
+  if ! curl -fSL --progress-bar \
+    --connect-timeout 10 --max-time 1800 \
+    --retry 3 --retry-delay 2 --retry-all-errors \
+    -o "$file" "$url"; then
     msg_error "Download failed: $url"
     rm -f "$file"
     exit 1
@@ -329,7 +330,7 @@ USB_SLOT="0"
 
 function default_settings() {
   BRANCH="stable"
-  BRANCH_URL="$STABLE_URL"
+  BRANCH_URL="$STABLE_VER"
   VMID="$(get_valid_nextid)"
   FORMAT=",efitype=4m"
   MACHINE=""
@@ -348,7 +349,7 @@ function default_settings() {
   USB_SLOT="0"
 
   echo -e "${DGN}HAOS Branch: ${BGN}${BRANCH}${CL}"
-  echo -e "${DGN}Resolved URL: ${BGN}${BRANCH_URL}${CL}"
+  echo -e "${DGN}HAOS Version: ${BGN}${BRANCH_VER}${CL}"
   echo -e "${DGN}VMID: ${BGN}${VMID}${CL}"
   echo -e "${DGN}Machine Type: ${BGN}i440fx${CL}"
   echo -e "${DGN}Disk Cache: ${BGN}Write Through${CL}"
@@ -373,17 +374,17 @@ function advanced_settings() {
     "beta"   "Beta"   OFF \
     "dev"    "Dev"    OFF \
     3>&1 1>&2 2>&3); then
-    case "$BRANCH" in
-      stable) BRANCH_URL="$STABLE_URL" ;;
-      beta)   BRANCH_URL="$BETA_URL" ;;
-      dev)    BRANCH_URL="$DEV_URL" ;;
+        case "$BRANCH" in
+      stable) BRANCH_VER="$STABLE_VER" ;;
+      beta)   BRANCH_VER="$BETA_VER" ;;
+      dev)    BRANCH_VER="$DEV_VER" ;;
     esac
-    if [[ -z "$BRANCH_URL" ]]; then
-      msg_error "No URL available for selected branch: $BRANCH"
+    if [[ -z "$BRANCH_VER" ]]; then
+      msg_error "No version available for selected branch: $BRANCH"
       exit 1
     fi
     echo -e "${DGN}HAOS Branch: ${BGN}$BRANCH${CL}"
-    echo -e "${DGN}Resolved URL: ${BGN}${BRANCH_URL}${CL}"
+    echo -e "${DGN}HAOS Version: ${BGN}${BRANCH_VER}${CL}"
   else
     exit-script
   fi
@@ -616,6 +617,7 @@ arch_check
 pve_check
 ssh_check
 ensure_pv
+ensure_xz
 
 if whiptail --backtitle "Proxmox VE Helper Script" --title "HOME ASSISTANT OS VM" \
   --yesno "This will create a new Home Assistant OS VM. Proceed?" 10 70; then
@@ -664,15 +666,24 @@ msg_ok "Using ${CL}${BL}$STORAGE${CL} ${GN}for Storage Location."
 msg_ok "Virtual Machine ID is ${CL}${BL}$VMID${CL}."
 
 # ---------- Image download / import ----------
+msg_info "Building HAOS download URL"
+if [[ -n "${DEV_VER:-}" && "$BRANCH_VER" == "$DEV_VER" ]]; then
+  DOWNLOAD_URL="https://os-artifacts.home-assistant.io/${BRANCH_VER}/haos_ova-${BRANCH_VER}.qcow2.xz"
+else
+  DOWNLOAD_URL="https://github.com/home-assistant/operating-system/releases/download/${BRANCH_VER}/haos_ova-${BRANCH_VER}.qcow2.xz"
+fi
+msg_ok "Download URL: $DOWNLOAD_URL"
+
 CACHE_DIR="/var/lib/vz/template/cache"
-CACHE_FILE="$CACHE_DIR/$(basename "$BRANCH_URL")"
+CACHE_FILE="$CACHE_DIR/$(basename "$DOWNLOAD_URL")"
+
 FILE_IMG="/var/lib/vz/template/tmp/${CACHE_FILE##*/%.xz}" # .qcow2
 
 mkdir -p "$CACHE_DIR" "$(dirname "$FILE_IMG")"
 
 msg_info "Retrieving Home Assistant ${BRANCH} disk image"
-download_and_validate_xz "$BRANCH_URL" "$CACHE_FILE"
-msg_ok "${CL}${BL}${BRANCH_URL}${CL}"
+download_and_validate_xz "$DOWNLOAD_URL" "$CACHE_FILE"
+msg_ok "${CL}${BL}${DOWNLOAD_URL}${CL}"
 
 extract_xz_with_pv "$CACHE_FILE" "$FILE_IMG"
 

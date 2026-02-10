@@ -752,8 +752,17 @@ qm set "$VMID" \
   -scsi0 "${DISK1_REF},${DISK_CACHE}${THIN}size=${DISK_SIZE}" \
   -boot order=scsi0 \
   -description "<div align='center'>
-  <h2>Home Assistant OS VM</h2>
-  <p>Created via local Proxmox helper script following official Proxmox and Home Assistant guidance.</p>
+  <a href='https://www.home-assistant.io/' target='_blank' rel='noopener noreferrer'>
+    <img src='https://avatars.githubusercontent.com/u/13844975?s=200&v=4' alt='Home Assistant' style='width:100px;height:100px;'/>
+  </a>
+
+  <h2 style='font-size: 20px; margin: 12px 0;'>Home Assistant OS</h2>
+
+  <p style='margin: 12px 0;'>
+    <a href='http://homeassistant.local:8123/config/dashboard' target='_blank' rel='noopener noreferrer'>
+      <img src='https://img.shields.io/badge/&#x2615;-LAUNCH-blue' alt='Launch HA' />
+    </a>
+  </p>
 </div>" >/dev/null
 
 # Optional USB passthrough attach

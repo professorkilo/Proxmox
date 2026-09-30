@@ -665,61 +665,69 @@ EOF'
 
 }
 
-# Sets a generic Proxmox LXC description with optional application metadata.
+# Sets a generic, clickable Proxmox LXC description.
 #
-# Optional variables defined by an individual ct/<app>.sh script:
-#   APP_PORT   - Service port, e.g. "5678"
-#   APP_URL    - Full access URL override, e.g. "https://app.example.com"
-#   APP_ICON   - Public HTTPS URL to the application's official logo/icon
+# Optional variables supplied by individual ct/<app>.sh scripts:
+#   APP_PORT - Direct web UI/service port, e.g. "5678"
+#   APP_ICON - Direct HTTPS URL to the official app icon/logo
 #
-# If no application-specific metadata is defined, this uses placeholders.
+# If APP_PORT and/or APP_ICON are not set, visible placeholders are shown.
 description() {
-  local lxc_ip
-  local app_port="${APP_PORT:-<PORT>}"
-  local app_url="${APP_URL:-}"
+  local lxc_ip=""
+  local app_port="${APP_PORT:-}"
   local app_icon="${APP_ICON:-}"
-  local access_url
+  local app_url=""
+  local icon_html=""
+  local access_html=""
+  local port_display=""
 
-  # Retrieve the first global IPv4 address on eth0. This may be unavailable
-  # briefly when DHCP is still completing, so it has a visible fallback.
-  lxc_ip="$(
-    pct exec "$CTID" -- ip -4 -o addr show dev eth0 scope global 2>/dev/null \
-      | awk '{print $4}' \
-      | cut -d/ -f1 \
-      | head -n 1
-  )"
+  # DHCP may not yet be complete immediately after pct start.
+  # Try for 10 seconds, then preserve a usable placeholder rather than failing.
+  for _ in {1..10}; do
+    lxc_ip="$(
+      pct exec "$CTID" -- ip -4 -o addr show dev eth0 scope global 2>/dev/null \
+        | awk '{print $4}' \
+        | cut -d/ -f1 \
+        | head -n 1
+    )"
+
+    [[ -n "$lxc_ip" ]] && break
+    sleep 1
+  done
 
   [[ -n "$lxc_ip" ]] || lxc_ip="<LXC_IP>"
 
-  # APP_URL takes precedence. Otherwise construct an HTTP URL only when both
-  # a real IP address and a port were provided.
-  if [[ -n "$app_url" ]]; then
-    access_url="$app_url"
-  elif [[ "$lxc_ip" != "<LXC_IP>" && "$app_port" != "<PORT>" ]]; then
-    access_url="http://${lxc_ip}:${app_port}"
+  if [[ -n "$app_port" ]]; then
+    port_display="$app_port"
   else
-    access_url="http://<LXC_IP>:<PORT>"
+    port_display="<PORT>"
   fi
 
-  # Include an icon only when the application script defines an HTTPS icon URL.
-  local icon_html=""
+  # Construct a clickable absolute URL only where a direct port and a live IP exist.
+  if [[ "$lxc_ip" != "<LXC_IP>" && -n "$app_port" ]]; then
+    app_url="http://${lxc_ip}:${app_port}"
+    access_html="<a href='${app_url}' target='_blank'>Open ${APP}: ${app_url}</a>"
+  else
+    access_html="Open ${APP}: http://&lt;LXC_IP&gt;:&lt;PORT&gt;"
+  fi
+
+  # Add the icon only if an individual application script defines a direct HTTPS asset.
   if [[ "$app_icon" == https://* ]]; then
-    icon_html="<a href='${access_url}' target='_blank' rel='noopener noreferrer'>
-    <img src='${app_icon}' alt='${APP} logo' height='64' />
-  </a>
-
-  "
+    if [[ -n "$app_url" ]]; then
+      icon_html="<a href='${app_url}' target='_blank'><img src='${app_icon}' alt='${APP}' height='72'></a><br>"
+    else
+      icon_html="<img src='${app_icon}' alt='${APP}' height='72'><br>"
+    fi
   fi
 
-  pct set "$CTID" -description "<div align='center'>
-  ${icon_html}<h2>${APP} LXC</h2>
+  pct set "$CTID" -description "<div style='text-align:center'>
+${icon_html}<b>${APP}</b><br>
+${access_html}
 </div>
 
-**Access:** [${access_url}](${access_url})  
-**LXC IP:** \`${lxc_ip}\`  
-**Port:** \`${app_port}\`  
-**Container ID:** \`${CTID}\`
-"
+IP Address: ${lxc_ip}
+Port: ${port_display}
+Container ID: ${CTID}"
 
   if [[ -f /etc/systemd/system/ping-instances.service ]]; then
     systemctl start ping-instances.service

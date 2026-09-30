@@ -218,13 +218,14 @@ if ! pveam update >/dev/null; then
 fi
 msg_ok "Updated LXC Template List"
 
-# Get the newest available template matching requested distribution and version.
+# Get the newest available template matching the requested distribution and version.
+# pveam available returns multiple columns; field 2 is the exact template filename.
 TEMPLATE_SEARCH="${PCT_OSTYPE}-${PCT_OSVERSION:-}"
 
 mapfile -t TEMPLATES < <(
   pveam available --section system \
-    | sed -n "s/.*\(${TEMPLATE_SEARCH}.*\)/\1/p" \
-    | sort -t - -k 2 -V
+    | awk -v search="${TEMPLATE_SEARCH}" '$2 ~ ("^" search) { print $2 }' \
+    | sort -V
 )
 
 if (( ${#TEMPLATES[@]} == 0 )); then

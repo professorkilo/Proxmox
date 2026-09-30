@@ -572,19 +572,30 @@ build_container() {
   export PCT_OSTYPE="$var_os"
   export PCT_OSVERSION="$var_version"
   export PCT_DISK_SIZE="$DISK_SIZE"
-  export PCT_OPTIONS="
-    -features $FEATURES
-    -hostname $HN
-    -tags proxmox-helper-scripts
-    $SD
-    $NS
-    -net0 name=eth0,bridge=$BRG$MAC,ip=$NET$GATE$VLAN$MTU
-    -onboot 1
-    -cores $CORE_COUNT
-    -memory $RAM_SIZE
-    -unprivileged $CT_TYPE
-    $PW
-  "
+  PCT_OPTIONS=(
+    -features "$FEATURES"
+    -hostname "$HN"
+    -tags "proxmox-helper-scripts"
+  )
+
+  [[ -n "${SD:-}" ]] && PCT_OPTIONS+=("$SD")
+  [[ -n "${NS:-}" ]] && PCT_OPTIONS+=("$NS")
+
+  PCT_OPTIONS+=(
+    -net0 "name=eth0,bridge=${BRG}${MAC},ip=${NET}${GATE}${VLAN}${MTU}"
+    -onboot "1"
+    -cores "$CORE_COUNT"
+    -memory "$RAM_SIZE"
+    -unprivileged "$CT_TYPE"
+  )
+
+  if [[ -n "${PW:-}" ]]; then
+    read -r -a PW_ARGS <<< "$PW"
+    PCT_OPTIONS+=("${PW_ARGS[@]}")
+  fi
+
+  export PCT_OPTIONS_SERIALIZED
+  PCT_OPTIONS_SERIALIZED="$(printf '%s\n' "${PCT_OPTIONS[@]}")"
   # This executes create_lxc.sh and creates the container and .conf file
   bash -c "$(wget -qLO - https://raw.githubusercontent.com/professorkilo/Proxmox/main/ct/create_lxc.sh)" || exit
 

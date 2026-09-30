@@ -252,12 +252,19 @@ if ! pveam list "$TEMPLATE_STORAGE" \
   msg_ok "Downloaded LXC Template"
 fi
 
-# Combine all options.
+# Combine default architecture with the option string exported by build.func.
 DEFAULT_PCT_OPTIONS=(
   -arch "$(dpkg --print-architecture)"
 )
 
-PCT_OPTIONS=("${PCT_OPTIONS[@]:-${DEFAULT_PCT_OPTIONS[@]}}")
+# build.func exports PCT_OPTIONS as a whitespace-delimited multiline string.
+# Convert it once to a Bash array so pct receives one argument per item.
+read -r -d '' -a PCT_OPTIONS_ARRAY < <(printf '%s\0' "${PCT_OPTIONS:-}")
+
+PCT_OPTIONS=(
+  "${DEFAULT_PCT_OPTIONS[@]}"
+  "${PCT_OPTIONS_ARRAY[@]}"
+)
 
 if [[ " ${PCT_OPTIONS[*]} " != *" -rootfs "* ]]; then
   PCT_OPTIONS+=(

@@ -93,15 +93,32 @@ root_check() {
   fi
 }
 
-# This function checks the version of Proxmox Virtual Environment (PVE) and exits if the version is not supported.
+# This function checks the version of Proxmox Virtual Environment (PVE)
+# and exits if the version is older than PVE 9.
 pve_check() {
-  if ! pveversion | grep -Eq "pve-manager/9.2[1-9]"; then
-    msg_error "This version of Proxmox Virtual Environment is not supported"
-    echo -e "Requires Proxmox Virtual Environment Version 9.2 or later."
+  local pve_version
+  local pve_major
+
+  # Example pveversion output:
+  # pve-manager/9.2.1/xxxxxxxx (running kernel: ...)
+  pve_version="$(pveversion | awk -F/ '/^pve-manager\// {print $2}' | cut -d- -f1)"
+  pve_major="${pve_version%%.*}"
+
+  if [[ -z "$pve_version" || ! "$pve_major" =~ ^[0-9]+$ ]]; then
+    msg_error "Unable to determine the Proxmox Virtual Environment version"
     echo -e "Exiting..."
     sleep 2
-    exit
-fi
+    exit 1
+  fi
+
+  if (( pve_major < 9 )); then
+    msg_error "This version of Proxmox Virtual Environment is not supported"
+    echo -e "Requires Proxmox Virtual Environment Version 9.0 or later."
+    echo -e "Detected: ${pve_version}"
+    echo -e "Exiting..."
+    sleep 2
+    exit 1
+  fi
 }
 
 # This function checks the system architecture and exits if it's not "amd64".

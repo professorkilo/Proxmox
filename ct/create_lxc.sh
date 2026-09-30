@@ -1,45 +1,37 @@
 #!/usr/bin/env bash
 
-# Copyright (c) 2026 professorkilo
+# Copyright (c) 2021-2026 professorkilo
 # Author: professorkilo
 # License: MIT
 # https://github.com/professorkilo/Proxmox/raw/main/LICENSE
 
-# This sets verbose mode if the global variable is set to "yes"
-# if [[ "${VERBOSE:-}" == "yes" ]]; then set -x; fi
+set -Eeuo pipefail
+trap 'error_handler $LINENO "$BASH_COMMAND" "$?"' ERR
 
-# This function sets color variables for formatting output in the terminal
-YW="$(echo "\033[33m")"
-BL="$(echo "\033[36m")"
-RD="$(echo "\033[01;31m")"
-GN="$(echo "\033[1;92m")"
-CL="$(echo "\033[m")"
+YW="\033[33m"
+BL="\033[36m"
+RD="\033[01;31m"
+GN="\033[1;92m"
+CL="\033[m"
 CM="${GN}✓${CL}"
 CROSS="${RD}✗${CL}"
-BFR="\\r\\033[K"
+BFR="\r\033[K"
 HOLD=" "
+SPINNER_PID=""
 
-# This sets error handling options and defines the error_handler function to handle errors
-set -Eeuo pipefail
-trap 'error_handler $LINENO "$BASH_COMMAND"' ERR
-
-# This function handles errors
 error_handler() {
-  if [[ -n "${SPINNER_PID:-}" ]] && ps -p "$SPINNER_PID" >/dev/null 2>&1; then
+  local line_number="$1"
+  local command="$2"
+  local exit_code="$3"
+
+  if [[ -n "${SPINNER_PID:-}" ]] && kill -0 "$SPINNER_PID" >/dev/null 2>&1; then
     kill "$SPINNER_PID" >/dev/null 2>&1 || true
   fi
 
   printf "\e[?25h"
-
-  local exit_code="$?"
-  local line_number="$1"
-  local command="$2"
-  local error_message="${RD}[ERROR]${CL} in line ${RD}${line_number}${CL}: exit code ${RD}${exit_code}${CL}: while executing command ${YW}${command}${CL}"
-
-  echo -e "\n${error_message}\n"
+  echo -e "\n${RD}[ERROR]${CL} line ${RD}${line_number}${CL}, exit code ${RD}${exit_code}${CL}: ${YW}${command}${CL}\n"
 }
 
-# This function displays a spinner.
 spinner() {
   local chars="/-\\|"
   local spin_i=0
@@ -47,224 +39,208 @@ spinner() {
   printf "\e[?25l"
 
   while true; do
-    printf "\r \e[36m%s\e[0m" "${chars:spin_i++%${#chars}:1}"
+    printf "\r \e[36m%s\e[0m" "${chars:spin_i++ % ${#chars}:1}"
     sleep 0.1
   done
 }
 
-# This function displays an informational message with a yellow color.
 msg_info() {
   local msg="$1"
+
   echo -ne " ${HOLD} ${YW}${msg}   "
   spinner &
   SPINNER_PID=$!
 }
 
-# This function displays a success message with a green color.
-msg_ok() {
-  if [[ -n "${SPINNER_PID:-}" ]] && ps -p "$SPINNER_PID" >/dev/null 2>&1; then
+stop_spinner() {
+  if [[ -n "${SPINNER_PID:-}" ]] && kill -0 "$SPINNER_PID" >/dev/null 2>&1; then
     kill "$SPINNER_PID" >/dev/null 2>&1 || true
+    wait "$SPINNER_PID" 2>/dev/null || true
   fi
 
+  SPINNER_PID=""
   printf "\e[?25h"
+}
 
+msg_ok() {
   local msg="$1"
+
+  stop_spinner
   echo -e "${BFR} ${CM} ${GN}${msg}${CL}"
 }
 
-# This function displays an error message with a red color.
 msg_error() {
-  if [[ -n "${SPINNER_PID:-}" ]] && ps -p "$SPINNER_PID" >/dev/null 2>&1; then
-    kill "$SPINNER_PID" >/dev/null 2>&1 || true
-  fi
-
-  printf "\e[?25h"
-
   local msg="$1"
+
+  stop_spinner
   echo -e "${BFR} ${CROSS} ${RD}${msg}${CL}"
 }
 
-# This checks for the presence of valid Container Storage and Template Storage locations
-msg_info "Validating Storage"
+die() {
+  msg_error "$1"
+  exit "${2:-1}"
+}
 
-VALIDCT="$(pvesm status -content rootdir | awk 'NR>1')"
-if [[ -z "$VALIDCT" ]]; then
-  msg_error "Unable to detect a valid Container Storage location."
-  exit 1
+select_storage() {
+  local class="$1"
+  local content
+  local content_label
+  local -a menu=()
+  local line
+  local tag
+  local type
+  local free
+  local item
+  local max_length=0
+  local selected_storage=""
+
+  case "$class" in
+    container)
+      content="rootdir"
+      content_label="Container"
+      ;;
+    template)
+      content="vztmpl"
+      content_label="Container template"
+      ;;
+    *)
+      die "Invalid storage class: ${class}"
+      ;;
+  esac
+
+  while read -r line; do
+    tag="$(awk '{print $1}' <<< "$line")"
+    type="$(awk '{printf "%-10s", $2}' <<< "$line")"
+    free="$(numfmt --field 4-6 --from-unit=K --to=iec --format "%.2f" <<< "$line" | awk '{printf "%9sB", $6}')"
+    item="  Type: ${type} Free: ${free} "
+
+    (( ${#item} > max_length )) && max_length="${#item}"
+    menu+=("$tag" "$item" "OFF")
+  done < <(pvesm status -content "$content" | awk 'NR > 1')
+
+  (( ${#menu[@]} > 0 )) || die "No usable ${content_label,,} storage was found."
+
+  if (( ${#menu[@]} == 3 )); then
+    printf '%s' "${menu[0]}"
+    return 0
+  fi
+
+  selected_storage="$(
+    whiptail \
+      --backtitle "Proxmox VE Helper Scripts" \
+      --title "Storage Pools" \
+      --radiolist \
+      "Which storage pool would you like to use for the ${content_label,,}?\nTo make a selection, use the Spacebar.\n" \
+      16 "$((max_length + 25))" 6 \
+      "${menu[@]}" \
+      3>&1 1>&2 2>&3
+  )" || return 1
+
+  [[ -n "$selected_storage" ]] || return 1
+  printf '%s' "$selected_storage"
+}
+
+require_var() {
+  local var_name="$1"
+  local value="${!var_name:-}"
+
+  [[ -n "$value" ]] || die "Required variable '${var_name}' is not set."
+}
+
+validate_numeric() {
+  local value="$1"
+  local label="$2"
+
+  [[ "$value" =~ ^[0-9]+$ ]] || die "${label} must be numeric."
+}
+
+template_exists() {
+  local storage="$1"
+  local template="$2"
+
+  pveam list "$storage" \
+    | awk '{print $1}' \
+    | grep -Fqx "${storage}:vztmpl/${template}"
+}
+
+load_pct_options() {
+  local option
+  PCT_OPTIONS=()
+
+  if [[ -n "${PCT_OPTIONS_SERIALIZED:-}" ]]; then
+    while IFS= read -r option; do
+      [[ -n "$option" ]] && PCT_OPTIONS+=("$option")
+    done <<< "$PCT_OPTIONS_SERIALIZED"
+  fi
+
+  PCT_OPTIONS=(
+    -arch "$(dpkg --print-architecture)"
+    "${PCT_OPTIONS[@]}"
+  )
+}
+
+require_var "CTID"
+require_var "PCT_OSTYPE"
+
+validate_numeric "$CTID" "Container ID"
+(( CTID >= 100 )) || die "Container ID must be 100 or greater."
+
+if pct status "$CTID" >/dev/null 2>&1; then
+  die "Container ID '${CTID}' is already in use."
 fi
 
-VALIDTMP="$(pvesm status -content vztmpl | awk 'NR>1')"
-if [[ -z "$VALIDTMP" ]]; then
-  msg_error "Unable to detect a valid Template Storage location."
-  exit 1
+msg_info "Validating Storage"
+
+if ! pvesm status -content rootdir | awk 'NR > 1 { found=1 } END { exit !found }'; then
+  die "Unable to detect a valid Container Storage location."
+fi
+
+if ! pvesm status -content vztmpl | awk 'NR > 1 { found=1 } END { exit !found }'; then
+  die "Unable to detect a valid Template Storage location."
 fi
 
 msg_ok "Validated Storage"
 
-# This function is used to select the storage class and determine the corresponding storage content type and label.
-select_storage() {
-  local CLASS="$1"
-  local CONTENT
-  local CONTENT_LABEL
-
-  case "$CLASS" in
-    container)
-      CONTENT="rootdir"
-      CONTENT_LABEL="Container"
-      ;;
-    template)
-      CONTENT="vztmpl"
-      CONTENT_LABEL="Container template"
-      ;;
-    *)
-      msg_error "Invalid storage class: ${CLASS}"
-      return 1
-      ;;
-  esac
-
-  # This queries all storage locations.
-  local -a MENU=()
-  local line
-  local TAG
-  local TYPE
-  local FREE
-  local ITEM
-  local OFFSET=2
-  local MSG_MAX_LENGTH=0
-
-  while read -r line; do
-    TAG="$(awk '{print $1}' <<<"$line")"
-    TYPE="$(awk '{printf "%-10s", $2}' <<<"$line")"
-    FREE="$(numfmt --field 4-6 --from-unit=K --to=iec --format %.2f <<<"$line" | awk '{printf "%9sB", $6}')"
-    ITEM="  Type: ${TYPE} Free: ${FREE} "
-
-    if (( ${#ITEM} + OFFSET > MSG_MAX_LENGTH )); then
-      MSG_MAX_LENGTH=$(( ${#ITEM} + OFFSET ))
-    fi
-
-    MENU+=("$TAG" "$ITEM" "OFF")
-  done < <(pvesm status -content "$CONTENT" | awk 'NR>1')
-
-  if (( ${#MENU[@]} == 0 )); then
-    msg_error "No usable ${CONTENT_LABEL,,} storage was found."
-    return 1
-  fi
-
-  # Select storage location.
-  if (( ${#MENU[@]} / 3 == 1 )); then
-    printf '%s' "${MENU[0]}"
-    return 0
-  fi
-
-  local STORAGE=""
-  while [[ -z "$STORAGE" ]]; do
-    STORAGE="$(
-      whiptail \
-        --backtitle "Proxmox VE Helper Scripts" \
-        --title "Storage Pools" \
-        --radiolist \
-        "Which storage pool would you like to use for the ${CONTENT_LABEL,,}?\nTo make a selection, use the Spacebar.\n" \
-        16 "$((MSG_MAX_LENGTH + 23))" 6 \
-        "${MENU[@]}" \
-        3>&1 1>&2 2>&3
-    )" || return 1
-  done
-
-  printf '%s' "$STORAGE"
-}
-
-# Test if required variables are set.
-if [[ -z "${CTID:-}" ]]; then
-  msg_error "You need to set the CTID variable."
-  exit 1
-fi
-
-if [[ -z "${PCT_OSTYPE:-}" ]]; then
-  msg_error "You need to set the PCT_OSTYPE variable."
-  exit 1
-fi
-
-# Test if ID is valid.
-if ! [[ "$CTID" =~ ^[0-9]+$ ]] || (( CTID < 100 )); then
-  msg_error "Container ID must be a numeric value of 100 or greater."
-  exit 1
-fi
-
-# Test if ID is in use.
-if pct status "$CTID" &>/dev/null; then
-  msg_error "ID '${CTID}' is already in use."
-  exit 1
-fi
-
-# Get template storage.
-TEMPLATE_STORAGE="$(select_storage template)" || {
-  msg_error "Template storage selection was aborted."
-  exit 1
-}
+TEMPLATE_STORAGE="$(select_storage template)" || die "Template storage selection was aborted."
 msg_ok "Using ${BL}${TEMPLATE_STORAGE}${CL} ${GN}for Template Storage."
 
-# Get container storage.
-CONTAINER_STORAGE="$(select_storage container)" || {
-  msg_error "Container storage selection was aborted."
-  exit 1
-}
+CONTAINER_STORAGE="$(select_storage container)" || die "Container storage selection was aborted."
 msg_ok "Using ${BL}${CONTAINER_STORAGE}${CL} ${GN}for Container Storage."
 
-# Update LXC template list.
 msg_info "Updating LXC Template List"
+
 if ! pveam update >/dev/null; then
-  msg_error "Unable to update the LXC template list."
-  exit 1
+  die "Unable to update the LXC template list."
 fi
+
 msg_ok "Updated LXC Template List"
 
-# Get the newest available template matching the requested distribution and version.
-# pveam available returns multiple columns; field 2 is the exact template filename.
 TEMPLATE_SEARCH="${PCT_OSTYPE}-${PCT_OSVERSION:-}"
 
 mapfile -t TEMPLATES < <(
   pveam available --section system \
-    | awk -v search="${TEMPLATE_SEARCH}" '$2 ~ ("^" search) { print $2 }' \
+    | awk -v search="$TEMPLATE_SEARCH" '$2 ~ ("^" search) { print $2 }' \
     | sort -V
 )
 
-if (( ${#TEMPLATES[@]} == 0 )); then
-  msg_error "Unable to find a template when searching for '${TEMPLATE_SEARCH}'."
-  exit 1
-fi
+(( ${#TEMPLATES[@]} > 0 )) || die "Unable to find an LXC template matching '${TEMPLATE_SEARCH}'."
 
 TEMPLATE="${TEMPLATES[-1]}"
 
-# Download the LXC template only if the exact template is not already present.
-if ! pveam list "$TEMPLATE_STORAGE" \
-  | awk '{print $1}' \
-  | grep -Fqx "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}"; then
-
+if ! template_exists "$TEMPLATE_STORAGE" "$TEMPLATE"; then
   msg_info "Downloading LXC Template"
 
   if ! pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" >/dev/null; then
-    msg_error "A problem occurred while downloading the LXC template."
+    stop_spinner
     echo "Storage: ${TEMPLATE_STORAGE}"
     echo "Template: ${TEMPLATE}"
-    exit 1
+    die "A problem occurred while downloading the LXC template."
   fi
 
   msg_ok "Downloaded LXC Template"
 fi
 
-# Combine default architecture with the option string exported by build.func.
-DEFAULT_PCT_OPTIONS=(
-  -arch "$(dpkg --print-architecture)"
-)
-
-# build.func exports PCT_OPTIONS as a whitespace-delimited multiline string.
-# Convert it once to a Bash array so pct receives one argument per item.
-read -r -d '' -a PCT_OPTIONS_ARRAY < <(printf '%s\0' "${PCT_OPTIONS:-}")
-
-PCT_OPTIONS=(
-  "${DEFAULT_PCT_OPTIONS[@]}"
-  "${PCT_OPTIONS_ARRAY[@]}"
-)
+load_pct_options
 
 if [[ " ${PCT_OPTIONS[*]} " != *" -rootfs "* ]]; then
   PCT_OPTIONS+=(
@@ -272,7 +248,6 @@ if [[ " ${PCT_OPTIONS[*]} " != *" -rootfs "* ]]; then
   )
 fi
 
-# Create container.
 msg_info "Creating LXC Container"
 
 if ! pct create \
@@ -281,8 +256,7 @@ if ! pct create \
   "${PCT_OPTIONS[@]}" \
   >/dev/null; then
 
-  msg_error "A problem occurred while trying to create the container."
-  exit 1
+  die "A problem occurred while trying to create the container."
 fi
 
 msg_ok "LXC Container ${BL}${CTID}${CL} ${GN}was successfully created."

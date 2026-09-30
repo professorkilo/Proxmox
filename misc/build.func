@@ -665,15 +665,62 @@ EOF'
 
 }
 
-# This function sets the description of the container.
+# Sets a generic Proxmox LXC description with optional application metadata.
+#
+# Optional variables defined by an individual ct/<app>.sh script:
+#   APP_PORT   - Service port, e.g. "5678"
+#   APP_URL    - Full access URL override, e.g. "https://app.example.com"
+#   APP_ICON   - Public HTTPS URL to the application's official logo/icon
+#
+# If no application-specific metadata is defined, this uses placeholders.
 description() {
-  IP=$(pct exec "$CTID" ip a s dev eth0 | awk '/inet / {print $2}' | cut -d/ -f1)
-  pct set "$CTID" -description "<div align='center'><a href='https://Helper-Scripts.com' target='_blank' rel='noopener noreferrer'><img src='https://raw.githubusercontent.com/professorkilo/Proxmox/main/misc/images/logo-81x112.png'/></a>
+  local lxc_ip
+  local app_port="${APP_PORT:-<PORT>}"
+  local app_url="${APP_URL:-}"
+  local app_icon="${APP_ICON:-}"
+  local access_url
 
-  # ${APP} LXC
+  # Retrieve the first global IPv4 address on eth0. This may be unavailable
+  # briefly when DHCP is still completing, so it has a visible fallback.
+  lxc_ip="$(
+    pct exec "$CTID" -- ip -4 -o addr show dev eth0 scope global 2>/dev/null \
+      | awk '{print $4}' \
+      | cut -d/ -f1 \
+      | head -n 1
+  )"
 
-  <a href='https://ko-fi.com/proxmoxhelperscripts'><img src='https://img.shields.io/badge/&#x2615;-Buy me a coffee-blue' /></a>
-  </div>"
+  [[ -n "$lxc_ip" ]] || lxc_ip="<LXC_IP>"
+
+  # APP_URL takes precedence. Otherwise construct an HTTP URL only when both
+  # a real IP address and a port were provided.
+  if [[ -n "$app_url" ]]; then
+    access_url="$app_url"
+  elif [[ "$lxc_ip" != "<LXC_IP>" && "$app_port" != "<PORT>" ]]; then
+    access_url="http://${lxc_ip}:${app_port}"
+  else
+    access_url="http://<LXC_IP>:<PORT>"
+  fi
+
+  # Include an icon only when the application script defines an HTTPS icon URL.
+  local icon_html=""
+  if [[ "$app_icon" == https://* ]]; then
+    icon_html="<a href='${access_url}' target='_blank' rel='noopener noreferrer'>
+    <img src='${app_icon}' alt='${APP} logo' height='64' />
+  </a>
+
+  "
+  fi
+
+  pct set "$CTID" -description "<div align='center'>
+  ${icon_html}<h2>${APP} LXC</h2>
+</div>
+
+**Access:** [${access_url}](${access_url})  
+**LXC IP:** \`${lxc_ip}\`  
+**Port:** \`${app_port}\`  
+**Container ID:** \`${CTID}\`
+"
+
   if [[ -f /etc/systemd/system/ping-instances.service ]]; then
     systemctl start ping-instances.service
   fi
